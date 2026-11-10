@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="robots" content="noindex, nofollow" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <!-- iOS ignores the web manifest's icons; it needs this PNG explicitly. -->
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <!-- viewport-fit=cover + the safe-area insets in index.css keep content
+         clear of the notch and home indicator when installed on iOS. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <!-- Standalone display when added to the iOS home screen. Android reads
+         this from the manifest; iOS does not. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MBT Copilot" />
+    <meta name="theme-color" content="#2d3b2d" />
+    <title>MBT Copilot</title>
+    <link rel="stylesheet" crossorigin href="./assets/index-HCrts_JY.css">
+    <meta name="mbt-build" content="2026-11-10 · 95f7771">
+  <link rel="manifest" href="./manifest.webmanifest"></head>
+  <body>
+    <div id="mbt-loader"></div>
+    <div id="root"></div>
+    <script type="module">//#region src/buildStamp.ts
+function e(e = document) {
+	return e.querySelector("meta[name=\"mbt-build\"]")?.getAttribute("content") || "dev";
+}
+var t = class extends Error {};
+function n(e) {
+	if (e.length < 10) throw new t("file too short to hold a header");
+	if (new TextDecoder().decode(e.subarray(0, 4)) !== "MBTC") throw new t("not an MBT Copilot app file");
+	let n = new DataView(e.buffer, e.byteOffset, e.byteLength), r = n.getUint8(4);
+	if (r !== 1) throw new t(`unknown format version ${r}`);
+	let i = n.getUint32(5), a = n.getUint8(9), o = 10 + a, s = o + 12;
+	if (a === 0 || e.length <= s) throw new t("file truncated");
+	return {
+		version: r,
+		iterations: i,
+		salt: e.slice(10, o),
+		iv: e.slice(o, s),
+		ciphertext: e.slice(s)
+	};
+}
+async function r(e, t, n, r = ["decrypt"]) {
+	let i = await crypto.subtle.importKey("raw", new TextEncoder().encode(e), "PBKDF2", !1, ["deriveKey"]);
+	return crypto.subtle.deriveKey({
+		name: "PBKDF2",
+		hash: "SHA-256",
+		salt: t,
+		iterations: n
+	}, i, {
+		name: "AES-GCM",
+		length: 256
+	}, !1, r);
+}
+async function i(e, t) {
+	let r = n(t), i = t.subarray(0, t.length - r.ciphertext.length);
+	return new Uint8Array(await crypto.subtle.decrypt({
+		name: "AES-GCM",
+		iv: r.iv,
+		additionalData: i
+	}, e, r.ciphertext));
+}
+function a(e) {
+	let t = "";
+	for (let n of e) t += String.fromCharCode(n);
+	return btoa(t).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+//#endregion
+//#region src/deploy/loader.ts
+var o = {
+	wrong: "That passphrase did not unlock it. Check it and paste it again.",
+	changed: "The passphrase has changed. Paste the new one.",
+	unreachable: "Cannot reach the app. Connect to the internet and try again.",
+	unreadable: "The app file could not be read. Reload when you are online.",
+	installHint: "Add to Home Screen to keep it working offline."
+}, s = "mbt-copilot-loader", c = "keys", l = "app";
+function u(e) {
+	return new Promise((t, n) => {
+		e.onsuccess = () => t(e.result), e.onerror = () => n(e.error);
+	});
+}
+function d(e = s) {
+	let t = () => {
+		let t = indexedDB.open(e, 1);
+		return t.onupgradeneeded = () => t.result.createObjectStore(c), u(t);
+	}, n = async (e, n) => {
+		let r = await t();
+		try {
+			return await u(n(r.transaction(c, e).objectStore(c)));
+		} finally {
+			r.close();
+		}
+	};
+	return {
+		get: () => n("readonly", (e) => e.get(l)).catch(() => void 0),
+		put: (e) => n("readwrite", (t) => t.put(e, l)).then(() => void 0, () => void 0),
+		clear: () => n("readwrite", (e) => e.delete(l)).then(() => void 0, () => void 0)
+	};
+}
+async function f(e, t) {
+	let r = await t.get();
+	if (!r) return { status: "none" };
+	let o;
+	try {
+		o = n(e);
+	} catch (e) {
+		return {
+			status: "unreadable",
+			detail: e instanceof Error ? e.message : String(e)
+		};
+	}
+	if (r.salt !== a(o.salt) || r.iterations !== o.iterations) return await t.clear(), { status: "changed" };
+	try {
+		return {
+			status: "ok",
+			code: await i(r.key, e)
+		};
+	} catch {
+		return await t.clear(), { status: "changed" };
+	}
+}
+function p(e) {
+	return e.trim();
+}
+async function m(e, t, o) {
+	let s;
+	try {
+		s = n(t);
+	} catch (e) {
+		return {
+			status: "unreadable",
+			detail: e instanceof Error ? e.message : String(e)
+		};
+	}
+	let c = await r(p(e), s.salt, s.iterations), l;
+	try {
+		l = await i(c, t);
+	} catch {
+		return { status: "wrong" };
+	}
+	return await o.put({
+		key: c,
+		salt: a(s.salt),
+		iterations: s.iterations
+	}), {
+		status: "ok",
+		code: l
+	};
+}
+async function h(e) {
+	let t = URL.createObjectURL(new Blob([e], { type: "text/javascript" }));
+	try {
+		await import(
+			/* @vite-ignore */
+			t
+);
+	} finally {
+		URL.revokeObjectURL(t);
+	}
+}
+async function g(e = "./app.bin") {
+	try {
+		let t = await fetch(e, { cache: "no-cache" });
+		return t.ok ? new Uint8Array(await t.arrayBuffer()) : null;
+	} catch {
+		return null;
+	}
+}
+var _ = "\n.mbt-loader{min-height:80dvh;display:flex;flex-direction:column;justify-content:center;gap:1rem;max-width:28rem}\n.mbt-loader h1{font-size:1.4rem;margin:0}\n.mbt-loader form{display:flex;flex-direction:column;gap:.75rem}\n.mbt-loader label{font-size:1rem}\n.mbt-loader input{font-size:16px;min-height:44px;padding:0 .75rem;border-radius:6px;border:1px solid GrayText;\n  background:Field;color:FieldText;box-sizing:border-box;width:100%}\n.mbt-loader button{font-size:1rem;min-height:44px;border-radius:6px;font-weight:600}\n.mbt-loader [role=alert]{min-height:1.5em;margin:0;font-weight:600}\n.mbt-loader .hint{font-size:.9rem;margin:0}\n.mbt-loader .stamp{font-size:.75rem;margin:1rem 0 0}\n";
+async function v(e, t) {
+	let n = e.ownerDocument, r = n.createElement("style");
+	r.textContent = _, e.append(r);
+	let i = n.createElement("main");
+	if (i.className = "mbt-loader", i.innerHTML = "\n    <h1>MBT Copilot</h1>\n    <form novalidate>\n      <label for=\"mbt-passphrase\">Passphrase</label>\n      <input id=\"mbt-passphrase\" name=\"passphrase\" type=\"password\" autocomplete=\"current-password\"\n        autocapitalize=\"off\" autocorrect=\"off\" spellcheck=\"false\" required>\n      <button type=\"submit\">Unlock</button>\n    </form>\n    <p role=\"alert\" data-testid=\"loader-message\"></p>", t.showInstallHint) {
+		let e = n.createElement("p");
+		e.className = "hint", e.dataset.testid = "loader-install-hint", e.textContent = o.installHint, i.append(e);
+	}
+	if (t.stamp) {
+		let e = n.createElement("p");
+		e.className = "stamp", e.dataset.testid = "loader-stamp", e.textContent = t.stamp, i.append(e);
+	}
+	let a = i.querySelector("form"), s = i.querySelector("input"), c = i.querySelector("button"), l = i.querySelector("[role=alert]"), u = (e) => {
+		l.textContent = e;
+	}, d = async (n) => {
+		e.remove(), await t.run(n);
+	}, p = await t.fetchApp();
+	if (!p) {
+		e.append(i), a.hidden = !0, u(o.unreachable);
+		return;
+	}
+	let h = await f(p, t.store);
+	if (h.status === "ok") return d(h.code);
+	if (e.append(i), h.status === "changed" && u(o.changed), h.status === "unreadable") {
+		a.hidden = !0, u(o.unreadable);
+		return;
+	}
+	s.focus(), await new Promise((e) => {
+		a.addEventListener("submit", (n) => {
+			n.preventDefault(), c.disabled = !0, m(s.value, p, t.store).then(async (t) => {
+				c.disabled = !1, t.status === "ok" ? (await d(t.code), e()) : t.status === "unreadable" ? u(o.unreadable) : (u(o.wrong), s.select());
+			});
+		});
+	});
+}
+function y(e) {
+	return "standalone" in e && e.standalone === !1;
+}
+function b() {
+	let t = document.getElementById("mbt-loader");
+	t && v(t, {
+		store: d(),
+		fetchApp: () => g(),
+		run: h,
+		showInstallHint: y(navigator),
+		stamp: e(document)
+	});
+}
+//#endregion
+//#region src/deploy/loaderEntry.ts
+b();
+//#endregion
+</script>
+  </body>
+</html>
